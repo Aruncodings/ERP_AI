@@ -1,0 +1,22 @@
+# Ignore graphify files/directories
+graphify.out
+graphify-out/
+
+# Ignore test directories
+test/
+tests/
+
+# Ignore data directory
+data/
+
+# Ignore large monitoring binaries and executables
+*.exe
+*.zip
+monitoring/bin/
+
+# Ignore python cache folders and compiled files
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+

@@ -1,0 +1,30 @@
+{"instruction":"Find all active employees","response":"db.employees.find({status:'active'})"}
+{"instruction":"Find employees with salary greater than 5000","response":"db.employees.find({salary:{$gt:5000}})"}
+{"instruction":"Find top 10 highest paid employees","response":"db.employees.find({}).sort({salary:-1}).limit(10)"}
+{"instruction":"Find employees in the HR department","response":"db.employees.find({department:'HR'})"}
+{"instruction":"Find employees hired after January 1, 2024","response":"db.employees.find({joining_date:{$gte:ISODate('2024-01-01')}})"}
+{"instruction":"Count employees in each department","response":"db.employees.aggregate([{$group:{_id:'$department',count:{$sum:1}}}])"}
+{"instruction":"Find average salary by department","response":"db.employees.aggregate([{$group:{_id:'$department',avgSalary:{$avg:'$salary'}}}])"}
+{"instruction":"Find departments with average salary greater than 10000","response":"db.employees.aggregate([{$group:{_id:'$department',avgSalary:{$avg:'$salary'}}},{$match:{avgSalary:{$gt:10000}}}])"}
+{"instruction":"Find top 5 departments by average salary","response":"db.employees.aggregate([{$group:{_id:'$department',avgSalary:{$avg:'$salary'}}},{$sort:{avgSalary:-1}},{$limit:5}])"}
+{"instruction":"Find active employees who joined after January 1, 2024","response":"db.employees.find({status:'active',joining_date:{$gte:ISODate('2024-01-01')}})"}
+{"instruction":"Find total sales by region","response":"db.sales.aggregate([{$group:{_id:'$region',totalSales:{$sum:'$amount'}}}])"}
+{"instruction":"Find average sales by region","response":"db.sales.aggregate([{$group:{_id:'$region',avgSales:{$avg:'$amount'}}}])"}
+{"instruction":"Find top 3 regions by total sales","response":"db.sales.aggregate([{$group:{_id:'$region',totalSales:{$sum:'$amount'}}},{$sort:{totalSales:-1}},{$limit:3}])"}
+{"instruction":"Find customers who spent more than 10000","response":"db.sales.aggregate([{$group:{_id:'$customer_id',totalSpent:{$sum:'$amount'}}},{$match:{totalSpent:{$gt:10000}}}])"}
+{"instruction":"Find top 3 product categories by revenue","response":"db.sales.aggregate([{$group:{_id:'$product_category',revenue:{$sum:'$amount'}}},{$sort:{revenue:-1}},{$limit:3}])"}
+{"instruction":"Find monthly sales totals for 2025","response":"db.sales.aggregate([{$match:{sale_date:{$gte:ISODate('2025-01-01'),$lt:ISODate('2026-01-01')}}},{$group:{_id:{$month:'$sale_date'},totalSales:{$sum:'$amount'}}},{$sort:{_id:1}}])"}
+{"instruction":"Find orders with status Pending","response":"db.orders.find({status:'Pending'})"}
+{"instruction":"Find total order amount by customer","response":"db.orders.aggregate([{$group:{_id:'$customer_id',totalAmount:{$sum:'$amount'}}}])"}
+{"instruction":"Find top 10 customers by total order amount","response":"db.orders.aggregate([{$group:{_id:'$customer_id',totalAmount:{$sum:'$amount'}}},{$sort:{totalAmount:-1}},{$limit:10}])"}
+{"instruction":"Find orders created in the last 30 days","response":"db.orders.find({created_at:{$gte:new Date(Date.now()-30*24*60*60*1000)}})"}
+{"instruction":"Find products with stock less than 10","response":"db.products.find({stock:{$lt:10}})"}
+{"instruction":"Find products priced above 500","response":"db.products.find({price:{$gt:500}})"}
+{"instruction":"Find average product price by category","response":"db.products.aggregate([{$group:{_id:'$category',avgPrice:{$avg:'$price'}}}])"}
+{"instruction":"Find top 5 categories by product count","response":"db.products.aggregate([{$group:{_id:'$category',count:{$sum:1}}},{$sort:{count:-1}},{$limit:5}])"}
+{"instruction":"Find employees and their department details","response":"db.employees.aggregate([{$lookup:{from:'departments',localField:'department_id',foreignField:'_id',as:'department'}},{$unwind:'$department'}])"}
+{"instruction":"Find customers and their orders","response":"db.customers.aggregate([{$lookup:{from:'orders',localField:'customer_id',foreignField:'customer_id',as:'orders'}}])"}
+{"instruction":"Find total revenue by region and category","response":"db.sales.aggregate([{$group:{_id:{region:'$region',category:'$product_category'},revenue:{$sum:'$amount'}}}])"}
+{"instruction":"Find highest salary employee in each department","response":"db.employees.aggregate([{$sort:{salary:-1}},{$group:{_id:'$department',employee:{$first:'$$ROOT'}}}])"}
+{"instruction":"Find total billable hours by employee","response":"db.timesheets.aggregate([{$group:{_id:'$employee_id',totalHours:{$sum:'$hours'}}}])"}
+{"instruction":"Find top 10 employees by billable hours","response":"db.timesheets.aggregate([{$group:{_id:'$employee_id',totalHours:{$sum:'$hours'}}},{$sort:{totalHours:-1}},{$limit:10}])"}

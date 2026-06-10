@@ -1,0 +1,35 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://localhost:3100/loki/api/v1/push
+
+scrape_configs:
+- job_name: erp_perf_logs
+  static_configs:
+  - targets:
+      - localhost
+    labels:
+      job: erp_backend
+      __path__: /var/log/erp/*.jsonl
+  pipeline_stages:
+  - json:
+      expressions:
+        ts: ts
+        endpoint: endpoint
+        status: status
+        db_name: db_name
+        model_ms: model_ms
+        backend_ms: backend_ms
+        total_ms: total_ms
+  - timestamp:
+      source: ts
+      format: RFC3339
+  - labels:
+      endpoint:
+      status:
+      db_name:
