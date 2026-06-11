@@ -9,7 +9,7 @@ try:
 except ImportError:
     QUERY_TIMEOUT_MS = 8000
 from erp_backend.core.security import is_hidden_field, sanitize_doc_for_display
-from erp_backend.core.utils import to_jsonable
+from erp_backend.core.utils import to_jsonable, normalize_lookup_text
 from erp_backend.storage.mongo import collection_is_allowed, estimated_count, mongo_client
 
 
@@ -78,12 +78,35 @@ def _normalize_operator_key(key):
     return f"${match.group(1)}"
 
 
+STAGE_NAME_ALIASES = {
+    "group": "$group", "groupby": "$group",
+    "match": "$match",
+    "project": "$project",
+    "sort": "$sort",
+    "limit": "$limit",
+    "skip": "$skip",
+    "unwind": "$unwind",
+    "count": "$count",
+    "lookup": "$lookup",
+    "sample": "$sample",
+    "facet": "$facet",
+    "bucket": "$bucket", "bucketauto": "$bucketAuto",
+    "addfields": "$addFields", "set": "$set", "unset": "$unset",
+    "sortbycount": "$sortByCount", "replaceroot": "$replaceRoot",
+    "replacewith": "$replaceWith", "densify": "$densify",
+    "fill": "$fill", "redact": "$redact",
+}
+
 def _coerce_aggregate_stage_key(key):
     key_text = str(key or "").strip()
     if not key_text:
         return ""
     if key_text.startswith("$"):
         return _normalize_operator_key(key_text)
+    lowered = key_text.lower()
+    alias = STAGE_NAME_ALIASES.get(key_text) or STAGE_NAME_ALIASES.get(lowered)
+    if alias:
+        return alias
     match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)", key_text)
     if not match:
         return ""
@@ -112,7 +135,15 @@ def _normalize_plan_value(value):
         for key, child in value.items():
             key_text = str(key).strip()
             if key_text.startswith("$"):
-                normalized[_normalize_operator_key(key_text)] = _normalize_plan_value(child)
+                op = _normalize_operator_key(key_text)
+                if op == "$size":
+                    child_norm = _normalize_plan_value(child)
+                    if isinstance(child_norm, dict) and next(iter(child_norm.keys())) == "$ifNull":
+                        normalized[op] = child_norm
+                    else:
+                        normalized[op] = {"$ifNull": [child_norm, []]}
+                else:
+                    normalized[op] = _normalize_plan_value(child)
             else:
                 key_text = _normalize_field_key(key_text)
                 if not key_text:
@@ -268,7 +299,7 @@ def _validate_find_plan(plan, collection):
     }
 
 
-def _validate_aggregate_plan(plan, collection):
+def _validate_aggregate_plan(plan, collection, allowed_collections):
     pipeline = _normalize_plan_value(plan.get("pipeline") or [])
     pipeline = _normalize_aggregate_pipeline_stages(pipeline)
 
@@ -280,6 +311,12 @@ def _validate_aggregate_plan(plan, collection):
         stage_name = _normalize_operator_key(stage_name_raw)
         stage_body = stage[stage_name_raw]
         stage = {stage_name: _normalize_plan_value(stage_body)}
+        if stage_name == "$lookup" and isinstance(stage_body, dict):
+            from_col = stage_body.get("from")
+            if from_col:
+                resolved_col = _resolve_target_collection(from_col, allowed_collections)
+                stage_body["from"] = resolved_col
+                stage["$lookup"] = stage_body
         if stage_name == "$group":
             stage["$group"] = _sanitize_group_stage(stage.get("$group"))
         elif stage_name == "$count":
@@ -373,6 +410,40 @@ def _sanitize_sort_by_count_expr(expr, prior_pipeline):
     return inferred or "$_id"
 
 
+def _resolve_target_collection(target_name, allowed_collections):
+    if not target_name or not allowed_collections:
+        return target_name
+    
+    target_clean = str(target_name).strip().lower()
+    for col in allowed_collections:
+        if col.lower() == target_clean:
+            return col
+            
+    def clean(s):
+        s_norm = normalize_lookup_text(s)
+        if s_norm.endswith("s") and len(s_norm) > 2:
+            return s_norm[:-1]
+        return s_norm
+
+    clean_target = clean(target_clean)
+    
+    for col in allowed_collections:
+        col_clean = col.lower()
+        if col_clean.startswith(f"{clean_target}_template_") or col_clean.startswith(f"{target_clean}_template_"):
+            return col
+            
+    for col in allowed_collections:
+        col_clean = col.lower()
+        if col_clean.startswith(clean_target) or col_clean.startswith(target_clean):
+            return col
+            
+    for col in allowed_collections:
+        if clean_target in col.lower() or target_clean in col.lower():
+            return col
+            
+    return target_name
+
+
 def validate_query_plan(plan, allowed_collections):
     if not isinstance(plan, dict):
         raise ValueError("query plan must be a JSON object")
@@ -382,7 +453,7 @@ def validate_query_plan(plan, allowed_collections):
     collection = _validate_collection(plan, allowed_collections)
     operation = str(plan.get("operation") or "find").lower().strip()
     if operation == "aggregate":
-        return _validate_aggregate_plan(plan, collection)
+        return _validate_aggregate_plan(plan, collection, allowed_collections)
     return _validate_find_plan(plan, collection)
 
 
@@ -428,12 +499,30 @@ def _preserve_group_keys(doc, group_fields):
     return preserved
 
 
+def _wrap_size_with_ifnull(value):
+    if isinstance(value, dict):
+        cleaned = {}
+        for k, v in value.items():
+            if k == "$size" and isinstance(v, (str, dict)):
+                if isinstance(v, dict) and next(iter(v)) == "$ifNull":
+                    cleaned[k] = _wrap_size_with_ifnull(v)
+                else:
+                    cleaned[k] = {"$ifNull": [_wrap_size_with_ifnull(v), []]}
+            else:
+                cleaned[k] = _wrap_size_with_ifnull(v)
+        return cleaned
+    if isinstance(value, list):
+        return [_wrap_size_with_ifnull(item) for item in value]
+    return value
+
+
 async def execute_plan(db_name, plan):
     collection_name = plan["collection"]
     collection = mongo_client()[db_name][collection_name]
 
     if plan["operation"] == "aggregate":
         pipeline = list(plan.get("pipeline") or [])
+        pipeline = _wrap_size_with_ifnull(pipeline)
         group_fields = _extract_group_fields(pipeline)
         pipeline.append({"$limit": MAX_RESULT_ROWS})
         cursor = collection.aggregate(pipeline, allowDiskUse=False)

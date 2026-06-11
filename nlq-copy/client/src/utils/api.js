@@ -157,3 +157,11 @@ export function fetchNDJSON(url, options, callbacks) {
     }
   })();
 }
+
+export async function getTrainingStatus() {
+  return fetchJSON('/train');
+}
+
+export async function triggerTraining() {
+  return fetchJSON('/train', { method: 'POST' });
+}

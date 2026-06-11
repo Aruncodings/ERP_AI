@@ -33,7 +33,7 @@ from erp_backend.services.query_prompts import (
     RESULT_ANALYSIS_PROMPT,
     FOLLOW_UP_SUGGESTIONS_PROMPT, CLARIFICATION_SUGGESTIONS_PROMPT,
     SIDEBAR_SUGGESTIONS_PROMPT, QUERY_SCOPE_PROMPT, RESULT_CONSTRAINTS_PROMPT,
-    EMPTY_RESULT_REPAIR_PROMPT, MISMATCH_REPAIR_PROMPT,
+    EMPTY_RESULT_REPAIR_PROMPT, MISMATCH_REPAIR_PROMPT, CHART_CONFIG_PROMPT,
 )
 from erp_backend.services.query_validate import (
     _has_blocked_operator, _has_hidden_field_reference,
@@ -148,23 +148,39 @@ def _compact_messages(messages, char_budget=None):
             if not isinstance(data, dict):
                 return content_str[:budget]
             
-            # Identify fields to trim
-            list_keys = ["allowed_tables", "allowed_collections", "collection_schemas", "chat_history", "sample_documents", "schema_fields"]
+            # Identify the dictionary containing list keys to trim (flat or nested context)
+            target = data
+            is_nested = False
+            if "context" in data and isinstance(data["context"], dict):
+                target = data["context"]
+                is_nested = True
+
+            list_keys = ["allowed_tables", "allowed_collections", "collection_schemas", "chat_history", "sample_documents", "schema_fields", "rows_preview"]
             for key in list_keys:
-                if key in data and isinstance(data[key], list):
-                    while len(data[key]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
-                        data[key].pop()
-                elif key in data and isinstance(data[key], dict):
-                    keys = list(data[key].keys())
+                if key in target and isinstance(target[key], list):
+                    while len(target[key]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
+                        target[key].pop()
+                elif key in target and isinstance(target[key], dict):
+                    keys = list(target[key].keys())
                     while len(keys) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
-                        del data[key][keys.pop()]
+                        del target[key][keys.pop()]
             
             if len(json.dumps(data, ensure_ascii=False)) > budget:
-                if "allowed_tables" in data and isinstance(data["allowed_tables"], list):
-                    for tbl in data["allowed_tables"]:
-                        if isinstance(tbl, dict) and "fields" in tbl and isinstance(tbl["fields"], list):
-                            while len(tbl["fields"]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
-                                tbl["fields"].pop()
+                if is_nested:
+                    if "collection_schemas" in target and isinstance(target["collection_schemas"], dict):
+                        for col_name, schema in target["collection_schemas"].items():
+                            if isinstance(schema, dict) and "fields" in schema and isinstance(schema["fields"], list):
+                                while len(schema["fields"]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
+                                    schema["fields"].pop()
+                else:
+                    if "allowed_tables" in data and isinstance(data["allowed_tables"], list):
+                        for tbl in data["allowed_tables"]:
+                            if isinstance(tbl, dict) and "fields" in tbl and isinstance(tbl["fields"], list):
+                                while len(tbl["fields"]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
+                                    tbl["fields"].pop()
+                    if "rows_preview" in data and isinstance(data["rows_preview"], list):
+                        while len(data["rows_preview"]) > 1 and len(json.dumps(data, ensure_ascii=False)) > budget:
+                            data["rows_preview"].pop()
             
             serialized = json.dumps(data, ensure_ascii=False)
             if len(serialized) <= budget:
@@ -546,6 +562,90 @@ def _deterministic_table_choice(user_input, allowed_collections, table_metadata)
     return None
 
 
+def _split_words(name):
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    s = re.sub(r"[_\-]+", " ", s)
+    return set(s.lower().split())
+
+
+def _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata):
+    if not table_metadata or not db_name:
+        return
+    from erp_backend.storage.mongo import run_async, infer_schema_from_docs
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import os
+
+    async def _local_get_collection_stats(col_name):
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+        client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=2000)
+        try:
+            db = client[db_name]
+            col = db[col_name]
+            count = await col.estimated_document_count()
+            docs = []
+            if count > 0:
+                async for doc in col.find().limit(5):
+                    docs.append(doc)
+            return count, docs
+        finally:
+            client.close()
+
+    for name in allowed_collections:
+        if name not in table_metadata:
+            table_metadata[name] = {
+                "collection": name,
+                "label": name,
+                "template_name": name,
+            }
+        meta = table_metadata[name]
+        
+        # Check if collection is empty using loop-safe local client query
+        try:
+            count, docs = run_async(_local_get_collection_stats(name))
+            meta["empty"] = (count == 0)
+        except Exception:
+            count = 0
+            docs = []
+            meta["empty"] = True
+
+        if "fields" not in meta or not meta["fields"]:
+            if docs:
+                try:
+                    inferred = infer_schema_from_docs(docs)
+                    fields = []
+                    business_terms = {name}
+                    for field_key, types in inferred.items():
+                        if not field_key:
+                            continue
+                        display_name = field_key.replace("_", " ").title()
+                        t = "TEXT"
+                        if "int" in types or "float" in types:
+                            t = "NUMBER"
+                        elif "bool" in types:
+                            t = "CHECKBOX"
+                        elif "datetime" in types:
+                            t = "DATETIME"
+                        fields.append({
+                            "field": field_key,
+                            "display": display_name,
+                            "type": t,
+                            "is_tabular_column": True,
+                            "lookup_collection": "",
+                            "lookup_display": "",
+                            "lookup_other_display": [],
+                        })
+                        business_terms.add(field_key)
+                        business_terms.add(display_name)
+                    meta["fields"] = fields
+                    meta["business_terms"] = sorted(term for term in business_terms if term)
+                except Exception:
+                    meta["fields"] = []
+                    meta["business_terms"] = [name]
+            else:
+                meta["fields"] = []
+                meta["business_terms"] = [name]
+
+
 def _collection_match_score(user_input, collection_name, table_metadata):
     normalized_input = _normalize_text(user_input)
     if not normalized_input:
@@ -580,27 +680,55 @@ def _collection_match_score(user_input, collection_name, table_metadata):
                 word_best_scores[word] = max(current_best, 10)
 
     if exact_match:
-        return 50
-
-    # Check secondary aliases (lower weight)
-    for alias in secondary_aliases:
-        if not alias:
-            continue
-        alias_root = _singularize(alias)
-        input_words = normalized_input.split()
-        for word in input_words:
-            if len(word) < 3:
+        # For exact matches on empty collections, we still want to apply penalty below
+        score = 50
+    else:
+        # Check secondary aliases (lower weight)
+        for alias in secondary_aliases:
+            if not alias:
                 continue
-            current_best = word_best_scores.get(word, 0)
-            if word == alias or word == alias_root:
-                word_best_scores[word] = max(current_best, 12)
-            elif alias in word or word in alias:
-                word_best_scores[word] = max(current_best, 8)
-            elif alias_root in word or word in alias_root:
-                word_best_scores[word] = max(current_best, 6)
+            alias_root = _singularize(alias)
+            input_words = normalized_input.split()
+            for word in input_words:
+                if len(word) < 3:
+                    continue
+                current_best = word_best_scores.get(word, 0)
+                if word == alias or word == alias_root:
+                    word_best_scores[word] = max(current_best, 12)
+                elif alias in word or word in alias:
+                    word_best_scores[word] = max(current_best, 8)
+                elif alias_root in word or word in alias_root:
+                    word_best_scores[word] = max(current_best, 6)
 
-    score = sum(word_best_scores.values())
+        score = sum(word_best_scores.values())
+
     score -= _collection_specificity_penalty(user_input, collection_name, metadata)
+
+    # Penalize metadata lookup collections (type, status, etc.) if not explicitly asked
+    template_name_lower = str(metadata.get("template_name") or collection_name).lower()
+    words = _split_words(template_name_lower)
+    metadata_suffixes = ["type", "status", "category", "group", "level", "method", "sector", "sub_type", "subtype"]
+    for suffix in metadata_suffixes:
+        has_suffix = False
+        if suffix in words:
+            has_suffix = True
+        else:
+            suffix_sing = _singularize(suffix)
+            if suffix_sing in words:
+                has_suffix = True
+            for w in words:
+                if _singularize(w) == suffix_sing:
+                    has_suffix = True
+                    break
+        if has_suffix:
+            input_words = _split_words(normalized_input)
+            if suffix not in input_words and _singularize(suffix) not in input_words:
+                score = max(0, score - 20)
+
+    # Penalize empty collections heavily (by 300 points) to prefer non-empty active ones
+    if metadata.get("empty"):
+        score = max(0, score - 300)
+
     return max(0, score)
 
 
@@ -802,32 +930,33 @@ def _resolve_named_collection(explicit_name, allowed_collections, table_metadata
 
 def _field_match_score(user_input, collection_name, table_metadata):
     normalized_input = _normalize_text(user_input)
-    prompt_terms = set(normalized_input.split()) if normalized_input else set()
-    if not prompt_terms:
+    if not normalized_input:
         return 0
-    
     metadata = table_metadata.get(collection_name, {})
-    all_fields = metadata.get("fields") or []
-    
-    total_score = 0
-    for field in all_fields:
+    prompt_terms = set(normalized_input.split())
+    total = 0
+    for field in (metadata.get("fields") or []):
         field_name = _normalize_text(field.get("field") or "")
         display = _normalize_text(field.get("display") or "")
-        aliases = [_normalize_text(a) for a in field.get("aliases") or []]
-        for pt in prompt_terms:
-            if len(pt) < 3:
+        aliases = [_normalize_text(a) for a in (field.get("aliases") or []) if a]
+        all_labels = {field_name, display} | set(aliases)
+        for label in all_labels:
+            if not label:
                 continue
-            if pt in field_name:
-                total_score += 15
-            if pt in display:
-                total_score += 10
-            for a in aliases:
-                if pt in a:
-                    total_score += 5
-    return total_score
+            if label in prompt_terms:
+                total += 15
+            elif label in normalized_input:
+                total += 10
+            else:
+                label_tokens = set(label.split())
+                overlap = len(label_tokens & prompt_terms)
+                if overlap:
+                    total += overlap * 5
+    return total
 
 
 def generate_table_choice(model, tokenizer, user_input, db_name, allowed_collections, table_metadata, chat_context=None, user_context=None, exact_candidates=None, preferred_collection=None):
+    _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata)
     exact_candidates = exact_candidates or {}
     deterministic_choice = {"collection": preferred_collection} if preferred_collection else _deterministic_table_choice(user_input, allowed_collections, table_metadata)
     
@@ -1008,33 +1137,6 @@ def generate_query_plan(
 
 
 
-def _field_match_score(user_input, collection_name, table_metadata):
-    normalized_input = _normalize_text(user_input)
-    if not normalized_input:
-        return 0
-    metadata = table_metadata.get(collection_name, {})
-    prompt_terms = set(normalized_input.split())
-    total = 0
-    for field in (metadata.get("fields") or []):
-        field_name = _normalize_text(field.get("field") or "")
-        display = _normalize_text(field.get("display") or "")
-        aliases = [_normalize_text(a) for a in (field.get("aliases") or []) if a]
-        all_labels = {field_name, display} | set(aliases)
-        for label in all_labels:
-            if not label:
-                continue
-            if label in prompt_terms:
-                total += 15
-            elif label in normalized_input:
-                total += 10
-            else:
-                label_tokens = set(label.split())
-                overlap = len(label_tokens & prompt_terms)
-                if overlap:
-                    total += overlap * 5
-    return total
-
-
 def generate_single_pass_query_plan(
     model,
     tokenizer,
@@ -1050,6 +1152,7 @@ def generate_single_pass_query_plan(
     matched_values=None,
     field_source_tracking=None,
 ):
+    _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata)
     exact_field_candidates = exact_field_candidates or {}
     vector_field_candidates = vector_field_candidates or {}
     matched_values = matched_values or {}
@@ -1732,6 +1835,48 @@ def build_chart_config(plan, docs):
     }
 
 
+def build_llm_chart_config(model, tokenizer, user_input, docs, max_labels=12):
+    rows = [row for row in (docs or []) if isinstance(row, dict)]
+    if len(rows) < 2:
+        return None
+    preview = []
+    for row in rows[:15]:
+        clipped = {k: v for k, v in row.items() if v not in (None, "", [], {})}
+        if clipped:
+            preview.append(clipped)
+    preview_rows = preview[:8]
+
+    payload = {
+        "question": str(user_input),
+        "rows_preview": preview_rows,
+    }
+    messages = [
+        {"role": "system", "content": CHART_CONFIG_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    try:
+        out = _generate_json_from_messages(model, tokenizer, messages, min(MAX_NEW_TOKENS, 256))
+    except Exception:
+        return None
+    if isinstance(out, dict) and out.get("skip"):
+        return None
+    if not isinstance(out, dict) or not out.get("type"):
+        return None
+    labels = (out.get("labels") or [])[:max_labels]
+    datasets = (out.get("datasets") or [])[:3]
+    for ds in datasets:
+        ds["data"] = (ds.get("data") or [])[:max_labels]
+    if not labels or not datasets:
+        return None
+    return {
+        "type": out["type"],
+        "title": str(out.get("title") or "")[:80],
+        "reason": str(out.get("reason") or "")[:120],
+        "labels": labels,
+        "datasets": datasets,
+    }
+
+
 def _extract_stream_token(chunk):
     if chunk is None:
         return ""
@@ -2405,7 +2550,9 @@ def evaluate_query_scope(
     allowed_collections,
     table_metadata,
     chat_context=None,
+    db_name="",
 ):
+    _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata)
     rows = []
     for name in (allowed_collections or [])[:24]:
         meta = (table_metadata or {}).get(name, {})
@@ -2447,6 +2594,7 @@ def repair_query_plan_on_empty_result(
     exact_field_candidates=None,
     vector_field_candidates=None,
 ):
+    _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata)
     collection = str(previous_plan.get("collection") or "").strip()
     metadata = table_metadata.get(collection, {})
     context = {
@@ -2487,6 +2635,7 @@ def repair_query_plan_on_mismatch_result(
     exact_field_candidates=None,
     vector_field_candidates=None,
 ):
+    _ensure_fields_in_metadata(db_name, allowed_collections, table_metadata)
     collection = str(previous_plan.get("collection") or "").strip()
     metadata = table_metadata.get(collection, {})
     context = {
@@ -2528,6 +2677,7 @@ from erp_backend.services.query_prompts import (
     FOLLOW_UP_SUGGESTIONS_PROMPT, MISMATCH_REPAIR_PROMPT, QUERY_PLANNER_PROMPT,
     QUERY_SCOPE_PROMPT, RESULT_CONSTRAINTS_PROMPT, RESULT_SUMMARY_PROMPT,
     RESULT_VERIFIER_PROMPT, SIDEBAR_SUGGESTIONS_PROMPT, SINGLE_PASS_QUERY_PROMPT,
+    CHART_CONFIG_PROMPT,
 )
 from erp_backend.services.query_validate import (
     _has_blocked_operator, _has_hidden_field_reference,

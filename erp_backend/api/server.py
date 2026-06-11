@@ -31,12 +31,14 @@ from erp_backend.core.config import (
     SYSTEM_FIELD_NAMES,
 )
 from erp_backend.core.observability import add_span_event, init_observability, set_span_attribute, traced_span
+from erp_backend.core.feedback import add_feedback
 from erp_backend.core.security import configure_hidden_field_policy
 from erp_backend.core.utils import lookup_tokens, normalize_lookup_text
+from erp_backend.services.continuous_trainer import background_training_loop, trigger_training, get_training_info
 from erp_backend.llm.runtime import load_model
 from erp_backend.services.field_retriever import retrieve_candidates
 from erp_backend.services.query import (
-    build_chart_config,
+    build_chart_config, build_llm_chart_config,
     build_result_insights,
     execute_plan,
     generate_follow_up_suggestions,
@@ -120,8 +122,25 @@ from erp_backend.services.intent import (
 )
 
 
-app = FastAPI(title="ERP Query Backend")
 logger = logging.getLogger(__name__)
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _app_lifespan(app_instance):
+    trainer_task = asyncio.create_task(background_training_loop(interval_seconds=300))
+    logger.info("Background training loop started.")
+    yield
+    trainer_task.cancel()
+    try:
+        await trainer_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Background training loop stopped.")
+
+
+app = FastAPI(title="ERP Query Backend", lifespan=_app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -156,10 +175,18 @@ _RUNTIME_POLICY_LOCK = asyncio.Lock()
 _RUNTIME_SYSTEM_FIELDS = set()
 
 
-def _response_artifacts(selected_collection, table_metadata, plan, docs, total):
+def _response_artifacts(selected_collection, table_metadata, plan, docs, total, model=None, tokenizer=None, user_input=""):
+    chart = build_chart_config(plan, docs)
+    if model and tokenizer and user_input and len(docs or []) >= 2:
+        try:
+            llm_chart = build_llm_chart_config(model, tokenizer, user_input, docs)
+            if llm_chart is not None:
+                chart = llm_chart
+        except Exception:
+            pass
     return {
         "insights": build_result_insights(selected_collection, table_metadata, docs, total),
-        "chart_config": build_chart_config(plan, docs),
+        "chart_config": chart,
         "db_performance": None,
     }
 
@@ -497,6 +524,7 @@ async def query(payload: QueryRequest):
                     accessible_collections,
                     table_metadata,
                     chat_context=effective_chat_context,
+                    db_name=payload.db_name,
                 )
             stage_ms["scope_gate"] = _ms_since(t_scope_gate)
             if not scope_gate.get("allow", True):
@@ -555,6 +583,7 @@ async def query(payload: QueryRequest):
                 accessible_collections,
                 table_metadata,
                 chat_context=effective_chat_context,
+                db_name=payload.db_name,
             )
             stage_ms["scope_gate"] = _ms_since(t_scope_gate)
             if not scope_gate.get("allow", True):
@@ -906,7 +935,7 @@ async def query(payload: QueryRequest):
         "ok",
         extra={"rows": len(docs), "total_rows": int(total or 0), "collection": selected_collection},
     )
-    response_artifacts = _response_artifacts(selected_collection, table_metadata, plan, docs, total)
+    response_artifacts = _response_artifacts(selected_collection, table_metadata, plan, docs, total, model=model, tokenizer=tokenizer, user_input=effective_prompt)
     return QueryResponse(
         response=response,
         follow_ups=follow_ups,
@@ -926,7 +955,33 @@ async def query(payload: QueryRequest):
 @app.post("/query_feedback", response_model=QueryResponse)
 async def query_feedback(payload: ResultFeedbackRequest):
     feedback = str(payload.feedback or "").strip().lower()
-    if feedback not in {"down", "thumbs_down", "dislike", "incorrect"}:
+    is_negative = feedback in {"down", "thumbs_down", "dislike", "incorrect"}
+
+    # Store rich feedback with corrections when available
+    wrong_fields_list = None
+    correct_fields_list = None
+    if payload.plan and isinstance(payload.plan, dict):
+        plan_collection = str(payload.plan.get("collection") or "").strip()
+        if plan_collection and payload.correct_collection and plan_collection != payload.correct_collection:
+            wrong_fields_list = [plan_collection]
+            correct_fields_list = [payload.correct_collection]
+    if payload.correct_fields and isinstance(payload.correct_fields, dict):
+        wrong_fields_list = list(payload.correct_fields.keys())
+        correct_fields_list = list(payload.correct_fields.values())
+
+    add_feedback(
+        question=payload.prompt,
+        positive=not is_negative,
+        wrong_collection=str(payload.collection or (payload.plan or {}).get("collection") or "") if is_negative else None,
+        correct_collection=payload.correct_collection,
+        wrong_fields=wrong_fields_list,
+        correct_fields=correct_fields_list,
+        plan=payload.plan if is_negative else None,
+    )
+
+
+
+    if not is_negative:
         return QueryResponse(
             response="Feedback recorded.",
             follow_ups=[],
@@ -1061,6 +1116,17 @@ async def query_feedback(payload: ResultFeedbackRequest):
         stage_ms["total"] = _ms_since(req_started)
         _write_perf_log(payload, "/query_feedback", stage_ms, "error", extra={"detail": str(exc)})
         raise
+
+
+@app.get("/train")
+async def train_status():
+    return get_training_info()
+
+
+@app.post("/train")
+async def trigger_train():
+    result = await trigger_training()
+    return result
 
 
 @app.post("/query_stream")
@@ -1244,6 +1310,7 @@ async def query_stream(payload: QueryRequest):
                     accessible_collections,
                     table_metadata,
                     chat_context=effective_chat_context,
+                    db_name=payload.db_name,
                 )
                 stage_ms["scope_gate"] = _ms_since(t_scope_gate)
                 if not scope_gate.get("allow", True):
@@ -1554,7 +1621,7 @@ async def query_stream(payload: QueryRequest):
                     last_collection=selected_collection,
                 )
 
-            response_artifacts = _response_artifacts(selected_collection, table_metadata, plan, docs, total)
+            response_artifacts = _response_artifacts(selected_collection, table_metadata, plan, docs, total, model=model, tokenizer=tokenizer, user_input=effective_prompt)
             final_payload = QueryResponse(
                 response=response,
                 follow_ups=follow_ups,

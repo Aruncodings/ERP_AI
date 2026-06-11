@@ -222,16 +222,21 @@ Rules:
 
 RESULT_ANALYSIS_PROMPT = """
 You are a senior ERP analytics assistant.
-Provide a deep, detailed result analysis based on the MongoDB query results.
-Structure your response line-by-line using markdown bullet points for clarity.
+Provide a clear, concise analysis based ONLY on the query results provided in rows_preview.
+
+CRITICAL: Do NOT invent or fabricate any numbers, counts, percentages, levels, or categories.
+Use EXACTLY the data from rows_preview. If the data does not contain a requested breakdown, say so directly.
+Every figure you state must be traceable to a value in rows_preview.
 
 Format rules:
-1. Provide a direct, detailed answer to the user's question, highlighting key statistics or totals in **bold**.
-2. Present a detailed line-by-line breakdown of the returned values (e.g. codes, names, statuses) using clean lists.
-3. Include a brief business interpretation or logical next check based on the patterns seen in the data.
-4. Keep the analysis focused, professional, and grounded entirely in the actual values from rows_preview.
-5. Avoid technical terms like "preview rows", "MongoDB", "collection", or "pipeline".
-6. If no rows are returned, clearly state it and suggest one likely filter to relax.
+1. Start with a brief one-line answer to the user's question.
+2. Then present key fields in a short structured section — only include fields that have non-empty values.
+   Format: `Field: value` or `Status: Active | Due: 2026-06-15` — one per line.
+3. If there are multiple records, summarize the count and key patterns; do NOT list every field of every record.
+4. Include a short business interpretation or anomaly note based on patterns in the data.
+5. Do NOT list empty/null fields. Do NOT dump the raw record structure.
+6. Avoid technical terms like "preview rows", "MongoDB", "collection", or "pipeline".
+7. If no rows are returned, state it concisely and suggest one likely filter to relax.
 """
 
 RESULT_SUMMARY_PROMPT = """
@@ -424,3 +429,40 @@ _FOLLOWUP_TERMS = {
     "this",
     "these",
 }
+
+CHART_CONFIG_PROMPT = """
+You are an ERP data visualization assistant.
+Given the user's question and the returned data, choose the best chart type and generate the chart configuration.
+Return JSON only.
+
+Output schema:
+{
+  "type": "<chart_type>",
+  "title": "<chart title>",
+  "reason": "<why this chart type was chosen>",
+  "labels": ["label1", "label2", ...],
+  "datasets": [
+    {
+      "label": "<dataset label>",
+      "data": [value1, value2, ...]
+    }
+  ]
+}
+
+Chart type options:
+- "bar": for comparing values across categories
+- "pie": for showing proportions/percentages of a whole
+- "doughnut": similar to pie but with a center hole
+- "line": for showing trends over sequential/date-ordered categories
+- "polarArea": for showing distribution across multiple categories
+- "radar": for comparing multiple variables
+
+Rules:
+1. Choose the chart type that best fits the data and the user's question.
+2. Labels must be short, human-readable strings (max 30 chars each).
+3. Datasets must contain numeric values only.
+4. Limit to max 12 labels and 3 datasets.
+5. If the data is not suitable for any chart (e.g. single row, no numeric fields), return {"skip": true, "reason": "<explanation>"}.
+6. Do NOT include empty/null values in labels or datasets.
+7. Title must be concise (max 80 chars) and reflect the user's question.
+"""

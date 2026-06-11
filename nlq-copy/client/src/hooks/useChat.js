@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { fetchNDJSON, apiUrl, fetchJSON, setApiBase } from '../utils/api';
+import { fetchNDJSON, apiUrl, fetchJSON, setApiBase, getTrainingStatus, triggerTraining } from '../utils/api';
 import { estimateTokens, generateConversationId, formatDuration } from '../utils/helpers';
 
 export default function useChat() {
@@ -46,6 +46,8 @@ export default function useChat() {
   const [computeMode, setComputeMode] = useState('gpu');
   const [hybridGpuLayers, setHybridGpuLayers] = useState(20);
   const [hybridGpuMemory, setHybridGpuMemory] = useState(3072);
+  const [trainingInfo, setTrainingInfo] = useState(null);
+  const [trainingRunning, setTrainingRunning] = useState(false);
 
   const timerRef = useRef(null);
   const requestStartedRef = useRef(0);
@@ -167,6 +169,30 @@ export default function useChat() {
       return null;
     }
   }, []);
+
+  const loadTrainingStatus = useCallback(async () => {
+    try {
+      const data = await getTrainingStatus();
+      setTrainingInfo(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const handleTriggerTraining = useCallback(async () => {
+    if (trainingRunning) return;
+    setTrainingRunning(true);
+    try {
+      const result = await triggerTraining();
+      setTrainingInfo(prev => ({ ...prev, ...result.info_after }));
+      return result;
+    } catch {
+      return null;
+    } finally {
+      setTrainingRunning(false);
+    }
+  }, [trainingRunning]);
 
   const clearChat = useCallback(() => {
     setMessages([]);
@@ -322,5 +348,6 @@ export default function useChat() {
     contextTokenLimit, setContextTokenLimit, baseTokens, setBaseTokens,
     currentQueryTokens, currentResponseTokens, activeDataTokens,
     chatHistory,
+    trainingInfo, trainingRunning, loadTrainingStatus, handleTriggerTraining,
   };
 }

@@ -65,6 +65,8 @@ class ResultFeedbackRequest(QueryRequest):
     collection: str = ""
     table_columns: list[str] = Field(default_factory=list)
     narrative: str = ""
+    correct_collection: str | None = None
+    correct_fields: dict[str, str] | None = None
 
 
 class SuggestionsResponse(BaseModel):

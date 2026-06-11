@@ -131,6 +131,15 @@ ROLLOUT_POLICY_CACHE_TTL_SECONDS = int(os.getenv("ROLLOUT_POLICY_CACHE_TTL_SECON
 # Prometheus metrics
 PROMETHEUS_ENABLED = os.getenv("PROMETHEUS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
+# Continuous training from user feedback
+CONTINUOUS_TRAINING_ENABLED = os.getenv("CONTINUOUS_TRAINING_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+FEEDBACK_RETRAIN_THRESHOLD = int(os.getenv("FEEDBACK_RETRAIN_THRESHOLD", "50"))
+FEEDBACK_RETRAIN_MIN_SAMPLES = int(os.getenv("FEEDBACK_RETRAIN_MIN_SAMPLES", "10"))
+FEEDBACK_COUNTER_PATH = os.getenv(
+    "FEEDBACK_COUNTER_PATH",
+    str((PROJECT_DIR / "feedback_counter.json").resolve()),
+)
+
 
 TEMPERATURE = 0.1
 TOP_P = 0.85

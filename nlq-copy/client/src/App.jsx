@@ -30,6 +30,7 @@ export default function App() {
     });
     chat.loadTemplates();
     chat.loadSuggestions();
+    chat.loadTrainingStatus();
   }, []);
 
   const applyDefaults = useCallback((data) => {
@@ -137,6 +138,10 @@ export default function App() {
     }
   }, [chat]);
 
+  const handleTrain = useCallback(async () => {
+    return chat.handleTriggerTraining();
+  }, [chat.handleTriggerTraining]);
+
   const selectedModelLabel = formatModelLabel(
     chat.runtime === 'gguf' ? chat.ggufModel :
     chat.runtime === 'safetensors' ? chat.safeModel :
@@ -186,6 +191,9 @@ export default function App() {
         onHybridGpuLayersChange={chat.setHybridGpuLayers}
         hybridGpuMemory={chat.hybridGpuMemory}
         onHybridGpuMemoryChange={chat.setHybridGpuMemory}
+        trainingInfo={chat.trainingInfo}
+        trainingRunning={chat.trainingRunning}
+        onTrain={handleTrain}
       />
 
       <div className="main">

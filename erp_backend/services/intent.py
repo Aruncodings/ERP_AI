@@ -696,6 +696,31 @@ def _strict_aggregate_schema_validation(plan, schema_index):
         "path",
         "preserveNullAndEmptyArrays",
         "includeArrayIndex",
+        "groupBy",
+        "boundaries",
+        "output",
+        "buckets",
+        "granularity",
+        "startWith",
+        "connectFromField",
+        "connectToField",
+        "maxDepth",
+        "depthField",
+        "restrictSearchWithMatch",
+        "near",
+        "distanceField",
+        "spherical",
+        "maxDistance",
+        "query",
+        "distanceMultiplier",
+        "includeLocs",
+        "key",
+        "newRoot",
+        "field",
+        "partitionByFields",
+        "range",
+        "partitionBy",
+        "sortBy",
     }
 
     def add_stage_alias(name):
@@ -735,6 +760,14 @@ def _strict_aggregate_schema_validation(plan, schema_index):
             add_stage_alias(stage_body.get("as"))
         if stage_name == "$unwind" and isinstance(stage_body, dict):
             add_stage_alias(stage_body.get("includeArrayIndex"))
+        if stage_name in {"$bucket", "$bucketAuto"} and isinstance(stage_body, dict):
+            output_doc = stage_body.get("output")
+            if isinstance(output_doc, dict):
+                for out_key in output_doc.keys():
+                    add_stage_alias(out_key)
+        if stage_name == "$facet" and isinstance(stage_body, dict):
+            for facet_key in stage_body.keys():
+                add_stage_alias(facet_key)
         if stage_name in output_alias_stages and isinstance(stage_body, dict):
             for key, child in stage_body.items():
                 key_text = str(key).strip()
@@ -954,7 +987,7 @@ def _is_out_of_scope_prompt(prompt, collections=None, table_metadata=None):
     return not bool(tokens & erp_terms)
 
 
-def _llm_scope_gate(model, tokenizer, prompt, accessible_collections, table_metadata, chat_context=None):
+def _llm_scope_gate(model, tokenizer, prompt, accessible_collections, table_metadata, chat_context=None, db_name=""):
     try:
         verdict = evaluate_query_scope(
             model,
@@ -963,6 +996,7 @@ def _llm_scope_gate(model, tokenizer, prompt, accessible_collections, table_meta
             accessible_collections,
             table_metadata,
             chat_context=chat_context,
+            db_name=db_name,
         )
         allow = bool(verdict.get("allow", True))
         message = str(verdict.get("message") or "").strip()

@@ -1,4 +1,4 @@
-import { Zap, HelpCircle, BarChart3, ClipboardList, Calculator, AlertTriangle, DollarSign, RefreshCw } from 'lucide-react';
+import { Zap, HelpCircle, BarChart3, ClipboardList, Calculator, AlertTriangle, DollarSign, RefreshCw, Play, BrainCircuit } from 'lucide-react';
 
 const iconMap = {
   'help-circle': HelpCircle,
@@ -31,10 +31,15 @@ export default function Sidebar({
   reasoningOllamaModel, onReasoningOllamaModelChange,
   validationEnabled, onValidationEnabledChange, computeMode, onComputeModeChange,
   hybridGpuLayers, onHybridGpuLayersChange, hybridGpuMemory, onHybridGpuMemoryChange,
+  trainingInfo, trainingRunning, onTrain,
 }) {
   const ggufModels = modelOptions?.gguf_models || [];
   const safeModels = modelOptions?.safetensors_models || [];
   const ollamaModels = modelOptions?.ollama_models || [];
+
+  const hasTrainingData = (trainingInfo?.feedback_count || 0) > 0
+    || (trainingInfo?.collection_corrections || 0) > 0
+    || (trainingInfo?.field_corrections || 0) > 0;
 
   return (
     <aside className="sidebar">
@@ -92,6 +97,45 @@ export default function Sidebar({
                 <span>{t}</span>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-label-row">
+            <div className="sidebar-label">
+              <BrainCircuit size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+              Model Training
+            </div>
+            <button
+              className="sidebar-train-btn"
+              onClick={onTrain}
+              disabled={trainingRunning || !hasTrainingData}
+              title={trainingRunning ? 'Training in progress...' : 'Start training on accumulated feedback'}
+            >
+              <Play size={12} style={{ marginRight: 3 }} />
+              {trainingRunning ? 'Training...' : 'Train'}
+            </button>
+          </div>
+          <div className="training-stats">
+            <div className="training-stat-item">
+              <span className="training-stat-label">Feedback</span>
+              <span className="training-stat-value">{trainingInfo?.feedback_count ?? 0}</span>
+            </div>
+            <div className="training-stat-item">
+              <span className="training-stat-label">Collection corrections</span>
+              <span className="training-stat-value">{trainingInfo?.collection_corrections ?? 0}</span>
+            </div>
+            <div className="training-stat-item">
+              <span className="training-stat-label">Field corrections</span>
+              <span className="training-stat-value">{trainingInfo?.field_corrections ?? 0}</span>
+            </div>
+            <div className="training-stat-item">
+              <span className="training-stat-label">Retrain dataset</span>
+              <span className="training-stat-value">{trainingInfo?.retrain_dataset_size ?? 0} rows</span>
+            </div>
+            {trainingRunning && (
+              <div className="training-progress">Training in progress... <span className="animate-pulse">⏳</span></div>
+            )}
           </div>
         </div>
 
