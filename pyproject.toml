@@ -1,0 +1,31 @@
+[project]
+name = "train"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=0.34.0",
+    "bitsandbytes>=0.43.3",
+    "chromadb>=0.5.5",
+    "datasets>=2.21.0",
+    "fastapi>=0.136.3",
+    "huggingface-hub>=0.24.0",
+    "llama-cpp-python>=0.3.28",
+    "motor>=3.5.0",
+    "opentelemetry-api>=1.26.0",
+    "opentelemetry-exporter-otlp>=1.26.0",
+    "opentelemetry-instrumentation-fastapi>=0.47b0",
+    "opentelemetry-sdk>=1.26.0",
+    "peft>=0.12.0",
+    "prometheus-client>=0.20.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+    "pymongo>=4.8.0",
+    "redis>=5.0.0",
+    "sentence-transformers>=3.0.1",
+    "sentencepiece>=0.2.0",
+    "torch>=2.3.0",
+    "transformers>=4.44.0",
+    "trl>=0.9.6",
+    "uvicorn>=0.30.0",
+]
